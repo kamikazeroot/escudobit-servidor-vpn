@@ -52,6 +52,8 @@ say "Cortafuegos (Oracle bloquea todo por defecto)"
 for rule in "-p udp --dport $WG_PORT" "-p tcp --dport 80" "-p tcp --dport 443"; do
   iptables -C INPUT $rule -j ACCEPT 2>/dev/null || iptables -I INPUT 1 $rule -j ACCEPT
 done
+# Desde la VPN, el servidor solo atiende el DNS (ni SSH ni nada más).
+iptables -C INPUT -i wg0 -j DROP 2>/dev/null || iptables -A INPUT -i wg0 -j DROP
 # DNS solo desde dentro de la VPN.
 iptables -C INPUT -i wg0 -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -i wg0 -p udp --dport 53 -j ACCEPT
 iptables -C INPUT -i wg0 -p tcp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -i wg0 -p tcp --dport 53 -j ACCEPT
@@ -75,8 +77,10 @@ cat > /etc/wireguard/wg0.conf <<EOF
 Address = $WG_IP/16
 ListenPort = $WG_PORT
 PrivateKey = $(cat /etc/wireguard/server.key)
-PostUp = iptables -t nat -A POSTROUTING -s $WG_NET -o $IFACE -j MASQUERADE; iptables -I FORWARD 1 -i wg0 -o $IFACE -j ACCEPT; iptables -I FORWARD 1 -i $IFACE -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-PostDown = iptables -t nat -D POSTROUTING -s $WG_NET -o $IFACE -j MASQUERADE; iptables -D FORWARD -i wg0 -o $IFACE -j ACCEPT; iptables -D FORWARD -i $IFACE -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+# Seguridad: los móviles solo pueden salir a internet. Nada de la red interna de Oracle (ni su servicio
+# de metadatos 169.254.169.254, que guarda la identidad de la máquina), ni de otros móviles de la VPN.
+PostUp = iptables -t nat -A POSTROUTING -s $WG_NET -o $IFACE -j MASQUERADE; iptables -I FORWARD 1 -i wg0 -o $IFACE -j ACCEPT; iptables -I FORWARD 1 -i $IFACE -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -I FORWARD 1 -i wg0 -d 10.0.0.0/8 -j DROP; iptables -I FORWARD 1 -i wg0 -d 172.16.0.0/12 -j DROP; iptables -I FORWARD 1 -i wg0 -d 192.168.0.0/16 -j DROP; iptables -I FORWARD 1 -i wg0 -d 169.254.0.0/16 -j DROP; iptables -I FORWARD 1 -i wg0 -o wg0 -j DROP; iptables -I INPUT 1 -i wg0 -d 169.254.0.0/16 -j DROP
+PostDown = iptables -t nat -D POSTROUTING -s $WG_NET -o $IFACE -j MASQUERADE; iptables -D FORWARD -i wg0 -o $IFACE -j ACCEPT; iptables -D FORWARD -i $IFACE -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -D FORWARD -i wg0 -d 10.0.0.0/8 -j DROP; iptables -D FORWARD -i wg0 -d 172.16.0.0/12 -j DROP; iptables -D FORWARD -i wg0 -d 192.168.0.0/16 -j DROP; iptables -D FORWARD -i wg0 -d 169.254.0.0/16 -j DROP; iptables -D FORWARD -i wg0 -o wg0 -j DROP; iptables -D INPUT -i wg0 -d 169.254.0.0/16 -j DROP
 EOF
 chmod 600 /etc/wireguard/wg0.conf
 systemctl enable --now wg-quick@wg0
@@ -151,7 +155,13 @@ systemctl restart escudobit-api
 say "HTTPS (Caddy + $DOMAIN)"
 cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
-    reverse_proxy /v1/* 127.0.0.1:8080
+    request_body {
+        max_size 16KB
+    }
+    # La IP real del móvil (nunca la que invente quien hace la petición), para el límite de altas.
+    reverse_proxy /v1/* 127.0.0.1:8080 {
+        header_up X-Forwarded-For {remote_host}
+    }
     respond 404
 }
 EOF

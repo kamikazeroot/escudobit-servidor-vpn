@@ -128,5 +128,22 @@ class Http(unittest.TestCase):
         self.assertEqual(400, status)
 
 
+
+class SeguridadTest(unittest.TestCase):
+    def test_tope_diario(self):
+        cap = api.DailyCap(2)
+        self.assertTrue(cap.allow(now=0))
+        self.assertTrue(cap.allow(now=1))
+        self.assertFalse(cap.allow(now=2))
+        self.assertTrue(cap.allow(now=86401))
+
+    def test_inactivos(self):
+        day = 86400
+        peers = {"a": {"since": 0}, "b": {"since": 0}, "c": {"since": 95 * day}}
+        hs = {"a": 50 * day, "b": 99 * day, "c": 0}
+        self.assertEqual(api.inactive_peers(hs, peers, 100 * day, 90), [])
+        self.assertEqual(api.inactive_peers(hs, peers, 150 * day, 90), ["a"])
+        self.assertEqual(sorted(api.inactive_peers({}, peers, 200 * day, 90)), ["a", "b", "c"])
+
 if __name__ == "__main__":
     unittest.main()

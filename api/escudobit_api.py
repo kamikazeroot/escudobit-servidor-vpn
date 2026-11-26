@@ -23,6 +23,8 @@ Configuración por variables de entorno (ver /etc/escudobit/api.env):
   PACKAGE=com.escudobit.app
   GOOGLE_KEY=/etc/escudobit/google.json   cuenta de servicio de Google Cloud
   RATE_PER_HOUR=10               altas por IP y hora
+  MAX_NEW_PER_DAY=300            altas nuevas en total al día (frena el abuso si INTEGRITY=off)
+  INACTIVE_DAYS=90               se borran los móviles que no se conectan en este tiempo
   WG_CMD=wg                      (en pruebas se cambia por un programa falso)
 """
 
@@ -103,7 +105,7 @@ def check_verdict(payload, expected_nonce, package, allow_unrecognized=False, no
 
 
 class RateLimiter:
-    """Como mucho N altas por IP cada hora."""
+    """Como mucho N altas por IP cada hora (y la memoria no crece sin fin)."""
 
     def __init__(self, per_hour):
         self.per_hour = per_hour
@@ -113,6 +115,8 @@ class RateLimiter:
     def allow(self, ip, now=None):
         now = now if now is not None else time.time()
         with self.lock:
+            if len(self.hits) > 10000:
+                self.hits = {k: v for k, v in self.hits.items() if v and now - v[-1] < 3600}
             recent = [t for t in self.hits.get(ip, []) if now - t < 3600]
             if len(recent) >= self.per_hour:
                 self.hits[ip] = recent
@@ -120,6 +124,38 @@ class RateLimiter:
             recent.append(now)
             self.hits[ip] = recent
             return True
+
+
+class DailyCap:
+    """Tope de altas NUEVAS en total en 24 horas: si alguien abusa desde muchas IPs, se frena."""
+
+    def __init__(self, per_day):
+        self.per_day = per_day
+        self.times = []
+        self.lock = threading.Lock()
+
+    def allow(self, now=None):
+        now = now if now is not None else time.time()
+        with self.lock:
+            self.times = [t for t in self.times if now - t < 86400]
+            if len(self.times) >= self.per_day:
+                return False
+            self.times.append(now)
+            return True
+
+
+def inactive_peers(handshakes, peers, now, days):
+    """
+    Móviles que llevan más de `days` días sin conectarse. `handshakes` es {llave: última conexión (s)}
+    de `wg show latest-handshakes` (0 = nunca); si nunca se conectó, cuenta desde la fecha de alta.
+    """
+    limit = days * 86400
+    old = []
+    for key, peer in peers.items():
+        last = handshakes.get(key, 0) or peer.get("since", now)
+        if now - last > limit:
+            old.append(key)
+    return old
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +180,18 @@ class PeerDb:
             json.dump(self.peers, f)
         os.replace(tmp, self.path)
 
-    def get_or_add(self, public_key, subnet):
+    def remove(self, keys):
+        with self.lock:
+            for k in keys:
+                self.peers.pop(k, None)
+            self.save()
+
+    def get_or_add(self, public_key, subnet, cap=None):
         with self.lock:
             if public_key in self.peers:
                 return self.peers[public_key]["address"], False
+            if cap is not None and not cap.allow():
+                return "lleno-hoy", False
             address = next_address(subnet, [p["address"] for p in self.peers.values()])
             if address is None:
                 return None, False
@@ -163,6 +207,41 @@ class PeerDb:
 def wg_add_peer(public_key, address):
     cmd = [env("WG_CMD", "wg"), "set", env("WG_INTERFACE", "wg0"), "peer", public_key, "allowed-ips", address + "/32"]
     subprocess.run(cmd, check=True, timeout=10)
+
+
+def wg_remove_peer(public_key):
+    cmd = [env("WG_CMD", "wg"), "set", env("WG_INTERFACE", "wg0"), "peer", public_key, "remove"]
+    subprocess.run(cmd, check=True, timeout=10)
+
+
+def wg_handshakes():
+    out = subprocess.run([env("WG_CMD", "wg"), "show", env("WG_INTERFACE", "wg0"), "latest-handshakes"],
+                         capture_output=True, text=True, timeout=10, check=True).stdout
+    result = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            result[parts[0]] = int(parts[1])
+    return result
+
+
+def cleanup_loop():
+    """Una vez al día borra los móviles que ya no usan la VPN (libera sitio y no guarda llaves viejas)."""
+    days = int(env("INACTIVE_DAYS", "90"))
+    while True:
+        time.sleep(86400)
+        try:
+            old = inactive_peers(wg_handshakes(), dict(DB.peers), time.time(), days)
+            for key in old:
+                try:
+                    wg_remove_peer(key)
+                except Exception:  # noqa: BLE001
+                    pass
+            if old:
+                DB.remove(old)
+                print(f"Borrados {len(old)} móviles inactivos", file=sys.stderr, flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"Limpieza fallida: {e}", file=sys.stderr, flush=True)
 
 
 def google_access_token(key_path):
@@ -213,6 +292,7 @@ def decode_integrity(token, package, key_path):
 
 DB = None
 LIMITER = None
+CAP = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -246,8 +326,12 @@ class Handler(BaseHTTPRequestHandler):
         if not LIMITER.allow(self.client_ip()):
             return self.reply(429, {"error": "demasiadas altas"})
         try:
-            length = min(int(self.headers.get("Content-Length", "0")), 16384)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 0 or length > 16384:
+                return self.reply(400, {"error": "petición no válida"})
             data = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(data, dict):
+                return self.reply(400, {"error": "petición no válida"})
         except Exception:
             return self.reply(400, {"error": "petición no válida"})
 
@@ -270,8 +354,8 @@ class Handler(BaseHTTPRequestHandler):
             if reason:
                 return self.reply(403, {"error": "integridad: " + reason})
 
-        address, new = DB.get_or_add(public_key, env("WG_SUBNET", "10.66.0.0/16"))
-        if address is None:
+        address, new = DB.get_or_add(public_key, env("WG_SUBNET", "10.66.0.0/16"), CAP)
+        if address is None or address == "lleno-hoy":
             return self.reply(503, {"error": "servidor lleno"})
         if new:
             try:
@@ -289,9 +373,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global DB, LIMITER
+    global DB, LIMITER, CAP
     DB = PeerDb(env("DB", "/var/lib/escudobit/peers.json"))
     LIMITER = RateLimiter(int(env("RATE_PER_HOUR", "10")))
+    CAP = DailyCap(int(env("MAX_NEW_PER_DAY", "300")))
+    threading.Thread(target=cleanup_loop, daemon=True).start()
     # Tras reiniciar el servidor, WireGuard arranca vacío: se vuelven a añadir todos los móviles.
     for key, peer in DB.peers.items():
         try:
