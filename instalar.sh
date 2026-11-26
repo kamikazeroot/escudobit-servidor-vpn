@@ -30,6 +30,13 @@ IFACE="$(ip -4 route show default | awk '{print $5; exit}')"
 DOMAIN="${PUBLIC_IP//./-}.sslip.io"
 echo "IP pública: $PUBLIC_IP   Interfaz: $IFACE   Nombre: $DOMAIN"
 
+say "Memoria de reserva (para las máquinas pequeñas de 1 GB)"
+if [ ! -f /swapfile ] && [ "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" -lt 3000000 ]; then
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+free -h | head -3
+
 say "Paquetes (WireGuard, Caddy, Python)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
