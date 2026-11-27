@@ -106,9 +106,10 @@ if [ ! -f /root/.escudobit-adguard ]; then
   # Lista de estafas de EscudoBit (se actualiza sola cada 6 horas en GitHub).
   curl -fsS -b "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/filtering/add_url -H 'Content-Type: application/json' \
     -d "{\"name\":\"EscudoBit - webs de estafa\",\"url\":\"$LISTS_URL\",\"whitelist\":false}"
-  # Preguntar fuera de forma cifrada a Quad9 y al servicio de seguridad de Cloudflare: los dos bloquean webs de estafa y virus. Sin guardar registros.
+  # Preguntar fuera de forma cifrada al servicio de seguridad de Cloudflare (bloquea estafas y virus; es el mismo que usa la app).
+  # Quad9 (también bloquea) queda de reserva por si Cloudflare no responde. Repartir entre los dos no suma los filtros. Sin registros.
   curl -fsS -b "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/dns_config -H 'Content-Type: application/json' \
-    -d '{"upstream_dns":["https://dns.quad9.net/dns-query","https://security.cloudflare-dns.com/dns-query"],"bootstrap_dns":["9.9.9.9","1.1.1.2"]}'
+    -d '{"upstream_dns":["https://security.cloudflare-dns.com/dns-query"],"fallback_dns":["https://dns.quad9.net/dns-query"],"bootstrap_dns":["1.1.1.2","9.9.9.9"],"upstream_mode":"load_balance"}'
   curl -fsS -b "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/querylog/config/update -H 'Content-Type: application/json' \
     -d '{"enabled":false,"interval":3600000,"anonymize_client_ip":true}' || true
   rm -f "$JAR"
