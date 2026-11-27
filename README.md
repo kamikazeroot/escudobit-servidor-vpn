@@ -10,9 +10,17 @@ webs de estafa. Al salir de esa wifi, la VPN se apaga sola y vuelve el escudo li
 | **AdGuard Home** | DNS sin publicidad ni rastreadores, con la lista de estafas de EscudoBit. |
 | **API de alta** (`api/escudobit_api.py`) | Cada móvil pide aquí su plaza en la VPN. |
 | **Caddy** | Pone HTTPS a la API con un nombre gratuito (`IP.sslip.io`). |
+| **Vigilante** (`api/escudobit_vigilante.py`) | Cuenta el tráfico, avisa a tu móvil y pausa la VPN antes de pasar de lo gratis. |
 
 **Coste: 0 €.** Oracle "Always Free" da para siempre una máquina ARM de hasta 4 núcleos y 24 GB,
 y 10 TB de tráfico al mes: sobra para miles de personas.
+
+**Que nunca cueste dinero (y que lo sepas todo):** lo único que Oracle podría cobrar es el tráfico
+por encima de 10 TB al mes. El vigilante lo cuenta cada 5 minutos y te avisa en el móvil con la app
+gratuita **ntfy** (sin cuenta): al **50 %** y al **80 %**, y al **90 %** pausa la VPN hasta el día 1
+(la app sigue protegiendo mensajes, QR y apps). Los lunes a las 10:00 te manda un resumen semanal.
+Al acabar la instalación verás el **tema de ntfy** al que suscribirte (y llegará un aviso de prueba).
+Para mirarlo a mano: `sudo python3 /opt/escudobit/escudobit_vigilante.py estado`.
 
 **Privacidad:** el servidor no guarda qué webs se visitan (el registro de AdGuard está apagado).
 De cada móvil solo guarda su llave pública, su dirección dentro de la VPN y la fecha de alta.

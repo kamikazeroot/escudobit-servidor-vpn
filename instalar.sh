@@ -7,6 +7,7 @@
 #   - AdGuard Home: DNS sin publicidad + la lista de estafas de EscudoBit.
 #   - API de alta: los móviles piden aquí su configuración (con Play Integrity).
 #   - Caddy: HTTPS automático para la API (con un nombre gratuito de sslip.io).
+#   - Vigilante: avisos al móvil del dueño y pausa de la VPN antes de pasar del tráfico gratis.
 #
 # Uso (en la máquina de Oracle):   sudo bash instalar.sh
 # Se puede volver a ejecutar: no rompe lo que ya está instalado.
@@ -168,6 +169,55 @@ EOF
 systemctl enable caddy
 systemctl restart caddy
 
+say "Vigilante (topes de tráfico y avisos al móvil del dueño)"
+timedatectl set-timezone Europe/Madrid || true
+cp "$DIR/api/escudobit_vigilante.py" /opt/escudobit/
+if [ ! -f /etc/escudobit/avisos.env ]; then
+  cat > /etc/escudobit/avisos.env <<EOF
+# Avisos al móvil con la app gratuita ntfy: suscríbete a este tema (es la única llave, no lo compartas).
+NTFY_SERVER=https://ntfy.sh
+NTFY_TOPIC=escudobit-$(openssl rand -hex 12)
+# Tráfico gratis de Oracle al mes (TB). Avisa al 50 y 80 %, y al 90 % pausa la VPN hasta el día 1.
+LIMITE_TB=10
+EOF
+  chmod 600 /etc/escudobit/avisos.env
+fi
+NTFY_TOPIC="$(grep '^NTFY_TOPIC=' /etc/escudobit/avisos.env | cut -d= -f2)"
+for unit in revisar semanal; do
+  cat > /etc/systemd/system/escudobit-$unit.service <<EOF
+[Unit]
+Description=Vigilante de EscudoBit ($unit)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/escudobit/escudobit_vigilante.py $unit
+EOF
+done
+cat > /etc/systemd/system/escudobit-revisar.timer <<EOF
+[Unit]
+Description=Revisar el tráfico de EscudoBit cada 5 minutos
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+cat > /etc/systemd/system/escudobit-semanal.timer <<EOF
+[Unit]
+Description=Resumen semanal de EscudoBit
+
+[Timer]
+OnCalendar=Mon *-*-* 10:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now escudobit-revisar.timer escudobit-semanal.timer
+
 say "Comprobación"
 sleep 5
 curl -fsS "https://$DOMAIN/v1/estado" && echo " <- API OK" || echo "La API aún no responde por HTTPS (el certificado puede tardar un minuto)."
@@ -179,6 +229,7 @@ API de alta:               https://$DOMAIN
 Llave pública WireGuard:   $SERVER_PUB
 Punto de conexión:         $PUBLIC_IP:$WG_PORT
 AdGuard Home (solo desde el servidor): http://127.0.0.1:3000  usuario admin, contraseña en /root/.escudobit-adguard
+Avisos al móvil (app ntfy, suscríbete a este tema): $NTFY_TOPIC
 EOF
 chmod 600 "$DATOS"
 
@@ -186,4 +237,8 @@ say "¡Listo!"
 echo "Pásale estos dos datos a la app (no son secretos):"
 echo "  API de alta:             https://$DOMAIN"
 echo "  Llave pública WireGuard: $SERVER_PUB"
+echo ""
+echo "Avisos del servidor en tu móvil: instala la app gratuita ntfy y suscríbete a este tema:"
+echo "  $NTFY_TOPIC"
 echo "(Guardados también en $DATOS)"
+/usr/bin/python3 /opt/escudobit/escudobit_vigilante.py prueba || true
