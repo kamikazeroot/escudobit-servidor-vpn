@@ -162,10 +162,15 @@ $DOMAIN {
         max_size 16KB
     }
     # La IP real del móvil (nunca la que invente quien hace la petición), para el límite de altas.
-    reverse_proxy /v1/* 127.0.0.1:8080 {
-        header_up X-Forwarded-For {remote_host}
+    handle /v1/* {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up X-Forwarded-For {remote_host}
+        }
     }
-    respond 404
+    # Todo lo demás: nada que ver (con "handle" el orden es el que se escribe).
+    handle {
+        respond 404
+    }
 }
 EOF
 systemctl enable caddy
