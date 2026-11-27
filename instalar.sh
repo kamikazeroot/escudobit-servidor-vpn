@@ -18,6 +18,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WG_PORT=51820
 WG_NET="10.66.0.0/16"
 WG_IP="10.66.0.1"
+# Panel de AdGuard Home (solo dentro de la máquina). El asistente de instalación usa el 3000.
+AG_PORT=3003
 LISTS_URL="https://kamikazeroot.github.io/escudobit-listas/v1/blacklist.txt"
 DATOS=/root/escudobit-datos.txt
 
@@ -96,18 +98,18 @@ if [ ! -f /root/.escudobit-adguard ]; then
   # Configuración inicial por su propia API (vale para cualquier versión de AdGuard Home).
   for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/control/install/get_addresses >/dev/null 2>&1 && break; sleep 2; done
   curl -fsS -X POST http://127.0.0.1:3000/control/install/configure -H 'Content-Type: application/json' \
-    -d "{\"web\":{\"ip\":\"127.0.0.1\",\"port\":3000},\"dns\":{\"ip\":\"$WG_IP\",\"port\":53},\"username\":\"admin\",\"password\":\"$AG_PASS\"}"
-  sleep 5
+    -d "{\"web\":{\"ip\":\"127.0.0.1\",\"port\":$AG_PORT},\"dns\":{\"ip\":\"$WG_IP\",\"port\":53},\"username\":\"admin\",\"password\":\"$AG_PASS\"}"
+  for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:$AG_PORT/ && break; sleep 2; done
   JAR="$(mktemp)"
-  curl -fsS -c "$JAR" -X POST http://127.0.0.1:3000/control/login -H 'Content-Type: application/json' \
+  curl -fsS -c "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/login -H 'Content-Type: application/json' \
     -d "{\"name\":\"admin\",\"password\":\"$AG_PASS\"}"
   # Lista de estafas de EscudoBit (se actualiza sola cada 6 horas en GitHub).
-  curl -fsS -b "$JAR" -X POST http://127.0.0.1:3000/control/filtering/add_url -H 'Content-Type: application/json' \
+  curl -fsS -b "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/filtering/add_url -H 'Content-Type: application/json' \
     -d "{\"name\":\"EscudoBit - webs de estafa\",\"url\":\"$LISTS_URL\",\"whitelist\":false}"
   # Preguntar fuera de forma cifrada a Quad9 y al servicio de seguridad de Cloudflare: los dos bloquean webs de estafa y virus. Sin guardar registros.
-  curl -fsS -b "$JAR" -X POST http://127.0.0.1:3000/control/dns_config -H 'Content-Type: application/json' \
+  curl -fsS -b "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/dns_config -H 'Content-Type: application/json' \
     -d '{"upstream_dns":["https://dns.quad9.net/dns-query","https://security.cloudflare-dns.com/dns-query"],"bootstrap_dns":["9.9.9.9","1.1.1.2"]}'
-  curl -fsS -b "$JAR" -X POST http://127.0.0.1:3000/control/querylog/config/update -H 'Content-Type: application/json' \
+  curl -fsS -b "$JAR" -X POST http://127.0.0.1:$AG_PORT/control/querylog/config/update -H 'Content-Type: application/json' \
     -d '{"enabled":false,"interval":3600000,"anonymize_client_ip":true}' || true
   rm -f "$JAR"
   echo "$AG_PASS" > /root/.escudobit-adguard && chmod 600 /root/.escudobit-adguard
@@ -228,7 +230,7 @@ EscudoBit - datos del servidor ($(date))
 API de alta:               https://$DOMAIN
 Llave pública WireGuard:   $SERVER_PUB
 Punto de conexión:         $PUBLIC_IP:$WG_PORT
-AdGuard Home (solo desde el servidor): http://127.0.0.1:3000  usuario admin, contraseña en /root/.escudobit-adguard
+AdGuard Home (solo desde el servidor): http://127.0.0.1:$AG_PORT  usuario admin, contraseña en /root/.escudobit-adguard
 Avisos al móvil (app ntfy, suscríbete a este tema): $NTFY_TOPIC
 EOF
 chmod 600 "$DATOS"
